@@ -48,6 +48,29 @@ static esp_err_t initi_sd_card(void)
     return ESP_OK;
 }
 
+esp_err_t root_handler(httpd_req_t *req)
+{
+    // HTML-Header
+    const char *html_header = "<html><body><h1>ESP32-Cam Webserver</h1>";
+    
+    // HTML-Footer
+    const char *html_footer = "</body></html>";
+    
+    // Den Header senden
+    httpd_resp_send_chunk(req, html_header, strlen(html_header));
+
+    // Das Bild als HTML-Element einfügen
+    httpd_resp_send_chunk(req, "<img src='/image' style='width:100%'/>", strlen("<img src='/image' style='width:100%'/>"));
+
+    // HTML-Footer senden
+    httpd_resp_send_chunk(req, html_footer, strlen(html_footer));
+
+    // Stream beenden
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    return ESP_OK;
+}
+
 // Dateipfad auf der SD-Karte
 #define FILE_PATH "/sdcard/PIC_4.JPG"
 
@@ -97,8 +120,16 @@ esp_err_t image_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-static const httpd_uri_t hello = {
-    .uri       = "/hello",
+// URI-Handler-Struktur
+httpd_uri_t root = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = root_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t image = {
+    .uri       = "/image",
     .method    = HTTP_GET,
     .handler   = image_handler,
     /* Let's pass response string in user
@@ -108,19 +139,19 @@ static const httpd_uri_t hello = {
 
 /* This handler allows the custom error handling functionality to be
  * tested from client side. For that, when a PUT request 0 is sent to
- * URI /ctrl, the /hello and /echo URIs are unregistered and following
+ * URI /ctrl, the /image and /echo URIs are unregistered and following
  * custom error handler http_404_error_handler() is registered.
- * Afterwards, when /hello or /echo is requested, this custom error
+ * Afterwards, when /image or /echo is requested, this custom error
  * handler is invoked which, after sending an error message to client,
  * either closes the underlying socket (when requested URI is /echo)
- * or keeps it open (when requested URI is /hello). This allows the
+ * or keeps it open (when requested URI is /image). This allows the
  * client to infer if the custom error handler is functioning as expected
  * by observing the socket state.
  */
 esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 {
-    if (strcmp("/hello", req->uri) == 0) {
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "/hello URI is not available");
+    if (strcmp("/image", req->uri) == 0) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "/image URI is not available");
         /* Return ESP_OK to keep underlying socket open */
         return ESP_OK;
     } 
@@ -140,7 +171,8 @@ static httpd_handle_t start_webserver(void)
     if (httpd_start(&server, &config) == ESP_OK) {
         // Set URI handlers
         ESP_LOGI(TAG, "Registering URI handlers");
-        httpd_register_uri_handler(server, &hello);;
+        httpd_register_uri_handler(server, &root);
+        httpd_register_uri_handler(server, &image);;
 
         return server;
     }
