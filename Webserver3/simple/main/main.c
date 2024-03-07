@@ -25,6 +25,11 @@
 #include "driver/sdmmc_defs.h"
 #include "sdmmc_cmd.h"
 #include "esp_vfs_fat.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
  */
@@ -50,79 +55,113 @@ static esp_err_t initi_sd_card(void)
 
 esp_err_t root_handler(httpd_req_t *req)
 {
-    // HTML-Header
-    const char *html_header = "<html><body><h1>ESP32-Cam Webserver</h1>";
-    
-    // HTML-Footer
-    const char *html_footer = "</body></html>";
-    
-    // Den Header senden
-    httpd_resp_send_chunk(req, html_header, strlen(html_header));
-
-    // Das Bild als HTML-Element einfügen
-    httpd_resp_send_chunk(req, "<img src='/image' style='width:100%'/>", strlen("<img src='/image' style='width:100%'/>"));
-
-    // HTML-Footer senden
-    httpd_resp_send_chunk(req, html_footer, strlen(html_footer));
-
-    // Stream beenden
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    return ESP_OK;
-}
-
-// Dateipfad auf der SD-Karte
-#define FILE_PATH "/sdcard/PIC_4.JPG"
-
-esp_err_t image_handler(httpd_req_t *req)
-{
-    // Dateipfad auf der SD-Karte
-    const char *file_path = FILE_PATH;
-
-    // Öffne die Datei auf der SD-Karte
-    FILE *file = fopen(file_path, "rb");
-    if (file == NULL)
+    // Holen des Dateinamens aus dem Query-String
+    char filename[127];
+    if (httpd_req_get_url_query_str(req, filename, sizeof(filename)) == ESP_OK)
     {
-        ESP_LOGE(TAG, "Fehler beim Öffnen der Datei");
+        // HTML-Header
+        const char *html_header = "<html><head><script>"
+                                  "function loadNextImage() {"
+                                  "  console.log('Button pressed');"
+                                  "  location.href = '/root?PIC_9.JPG';"
+                                  "}"
+                                  "</script></head><body><h1>ESP32-Cam Webserver</h1>";
+
+        // HTML-Button zum Laden des nächsten Bildes
+        const char *html_button = "<button onclick='loadNextImage()'>Nächstes Bild</button>";
+
+        // HTML-Footer
+        const char *html_footer = "</body></html>";
+
+        char html_image[512];
+        snprintf(html_image, sizeof(html_image), "<img src='/image?%s' style='width:100%%'/>", filename);
+
+        // Den Header senden
+        httpd_resp_send_chunk(req, html_header, strlen(html_header));
+
+        // Den Button senden
+        httpd_resp_send_chunk(req, html_button, strlen(html_button));
+
+        // Das Bild als HTML-Element einfügen
+        httpd_resp_send_chunk(req, html_image, strlen(html_image));
+
+        // HTML-Footer senden
+        httpd_resp_send_chunk(req, html_footer, strlen(html_footer));
+
+        // Stream beenden
+        httpd_resp_send_chunk(req, NULL, 0);
+
+        return ESP_OK;
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Fehler beim Holen des Dateinamens aus dem Query-String");
         httpd_resp_send_404(req);
         return ESP_FAIL;
     }
+}
 
-    // Sende den Header für das Bild
-    httpd_resp_set_type(req, "image/jpeg");
-    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=PIC_4.JPG");
-
-    // Lese das Bild und sende es im Chunks an den Client
-    char *chunk = (char *)malloc(1024);
-    size_t read_len;
-    do
+esp_err_t image_handler(httpd_req_t *req)
+{
+    // Holen des Dateinamens aus dem Query-String
+    char filename[127];
+    if (httpd_req_get_url_query_str(req, filename, sizeof(filename)) == ESP_OK)
     {
-        read_len = fread(chunk, 1, 1024, file);
-        if (read_len > 0)
+        // Dateipfad auf der SD-Karte
+        char file_path[256];
+        snprintf(file_path, sizeof(file_path), "/sdcard/%s", filename);
+
+        // Öffne die Datei auf der SD-Karte
+        FILE *file = fopen(file_path, "rb");
+        if (file == NULL)
         {
-            if (httpd_resp_send_chunk(req, chunk, read_len) != ESP_OK)
-            {
-                free(chunk);
-                fclose(file);
-                ESP_LOGE(TAG, "Fehler beim Senden des Bild-Chunks");
-                return ESP_FAIL;
-            }
+            ESP_LOGE(TAG, "Fehler beim Öffnen der Datei: %s", file_path);
+            httpd_resp_send_404(req);
+            return ESP_FAIL;
         }
-    } while (read_len > 0);
 
-    // Schließe die Datei und befreie den Chunk-Speicher
-    free(chunk);
-    fclose(file);
+        // Sende den Header für das Bild
+        httpd_resp_set_type(req, "image/jpeg");
+        httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=bild.jpg");
 
-    // Beende den Bild-Stream
-    httpd_resp_send_chunk(req, NULL, 0);
+        // Lese das Bild und sende es im Chunks an den Client
+        char *chunk = (char *)malloc(1024);
+        size_t read_len;
+        do
+        {
+            read_len = fread(chunk, 1, 1024, file);
+            if (read_len > 0)
+            {
+                if (httpd_resp_send_chunk(req, chunk, read_len) != ESP_OK)
+                {
+                    free(chunk);
+                    fclose(file);
+                    ESP_LOGE(TAG, "Fehler beim Senden des Bild-Chunks");
+                    return ESP_FAIL;
+                }
+            }
+        } while (read_len > 0);
 
-    return ESP_OK;
+        // Schließe die Datei und befreie den Chunk-Speicher
+        free(chunk);
+        fclose(file);
+
+        // Beende den Bild-Stream
+        httpd_resp_send_chunk(req, NULL, 0);
+
+        return ESP_OK;
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Fehler beim Holen des Dateinamens aus dem Query-String");
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
 }
 
 // URI-Handler-Struktur
 httpd_uri_t root = {
-    .uri       = "/",
+    .uri       = "/root",
     .method    = HTTP_GET,
     .handler   = root_handler,
     .user_ctx  = NULL
@@ -137,17 +176,7 @@ static const httpd_uri_t image = {
     .user_ctx  = NULL
 };
 
-/* This handler allows the custom error handling functionality to be
- * tested from client side. For that, when a PUT request 0 is sent to
- * URI /ctrl, the /image and /echo URIs are unregistered and following
- * custom error handler http_404_error_handler() is registered.
- * Afterwards, when /image or /echo is requested, this custom error
- * handler is invoked which, after sending an error message to client,
- * either closes the underlying socket (when requested URI is /echo)
- * or keeps it open (when requested URI is /image). This allows the
- * client to infer if the custom error handler is functioning as expected
- * by observing the socket state.
- */
+
 esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 {
     if (strcmp("/image", req->uri) == 0) {
@@ -172,7 +201,7 @@ static httpd_handle_t start_webserver(void)
         // Set URI handlers
         ESP_LOGI(TAG, "Registering URI handlers");
         httpd_register_uri_handler(server, &root);
-        httpd_register_uri_handler(server, &image);;
+        httpd_register_uri_handler(server, &image);
 
         return server;
     }
@@ -210,7 +239,6 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
         *server = start_webserver();
     }
 }
-
 
 void app_main(void)
 {
