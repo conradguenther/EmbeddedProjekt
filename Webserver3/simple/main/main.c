@@ -53,28 +53,64 @@ static esp_err_t initi_sd_card(void)
     return ESP_OK;
 }
 
+
+int sd_card_count_files() {
+    // Öffne das Verzeichnis auf der SD-Karte
+    DIR* dir = opendir("/sdcard");
+    if (!dir) {
+        printf("Fehler beim Öffnen des Verzeichnisses auf der SD-Karte.\n");
+        return -1;
+    }
+
+    // Zähle die Dateien mit dem angegebenen Präfix und Suffix
+    int fileCount = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG && strncmp(entry->d_name, "PIC", strlen("PIC")) == 0 &&
+            strstr(entry->d_name, ".JPG") != NULL) {
+            fileCount++;
+        }
+    }
+    ESP_LOGI(TAG, "Files gefunden: %d", fileCount);
+    // Schließe das Verzeichnis
+    closedir(dir);
+
+    return fileCount;
+}
+
+
 esp_err_t root_handler(httpd_req_t *req)
 {
     // Holen des Dateinamens aus dem Query-String
-    char filename[127];
-    if (httpd_req_get_url_query_str(req, filename, sizeof(filename)) == ESP_OK)
+    char currentImage[15];
+    int imageCount = sd_card_count_files();
+
+    if (httpd_req_get_url_query_str(req, currentImage, sizeof(currentImage)) == ESP_OK)
     {
+
+        char html_image[512];
+        snprintf(html_image, sizeof(html_image), "<img src='/image?PIC_%s.JPG' style='width:100%%'/>", currentImage);
+
+        if(atoi(currentImage) >= imageCount) {
+            strcpy(currentImage, "0");
+        }
         // HTML-Header
-        const char *html_header = "<html><head><script>"
-                                  "function loadNextImage() {"
-                                  "  console.log('Button pressed');"
-                                  "  location.href = '/root?PIC_9.JPG';"
-                                  "}"
-                                  "</script></head><body><h1>ESP32-Cam Webserver</h1>";
+        char html_header[256];  // Annahme: Ausreichende Größe für den Header
+        snprintf(html_header, sizeof(html_header),
+            "<html><head><script>"
+            "var currentImage = %s;"
+            "function loadNextImage() {"
+            "  console.log('Button pressed');"
+            "  currentImage++;"
+            "  location.href = '/root?' + currentImage;"
+            "}"
+            "</script></head><body><h1>ESP32-Cam Webserver</h1>", currentImage);
 
         // HTML-Button zum Laden des nächsten Bildes
         const char *html_button = "<button onclick='loadNextImage()'>Nächstes Bild</button>";
 
         // HTML-Footer
         const char *html_footer = "</body></html>";
-
-        char html_image[512];
-        snprintf(html_image, sizeof(html_image), "<img src='/image?%s' style='width:100%%'/>", filename);
 
         // Den Header senden
         httpd_resp_send_chunk(req, html_header, strlen(html_header));
@@ -159,7 +195,7 @@ esp_err_t image_handler(httpd_req_t *req)
     }
 }
 
-// URI-Handler-Struktur
+// URI-Handler-Struktur http://192.168.2.160/root?PIC_4.JPG
 httpd_uri_t root = {
     .uri       = "/root",
     .method    = HTTP_GET,
