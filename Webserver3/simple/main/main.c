@@ -33,8 +33,10 @@
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
  */
+#define SD_CARD_MOUNT_POINT "/sdcard"
 
 static const char *TAG = "example";
+
 
 static esp_err_t initi_sd_card(void)
 {  
@@ -95,7 +97,7 @@ esp_err_t root_handler(httpd_req_t *req)
             strcpy(currentImage, "0");
         }
         // HTML-Header
-        char html_header[256];  // Annahme: Ausreichende Größe für den Header
+        char html_header[1024];  // Annahme: Ausreichende Größe für den Header
         snprintf(html_header, sizeof(html_header),
             "<html><head><script>"
             "var currentImage = %s;"
@@ -104,10 +106,36 @@ esp_err_t root_handler(httpd_req_t *req)
             "  currentImage++;"
             "  location.href = '/root?' + currentImage;"
             "}"
+            "function createFolder() {"
+            "    var folderName = document.getElementById('folderName').value;"
+            "    if (folderName.trim() === '') {"
+            "        alert('Bitte geben Sie einen Ordnername ein.');"
+            "        return;"
+            "    }"
+            "    fetch('/create_folder?' + folderName, {"
+            "       method: 'GET'"
+            "    })" 
+            "    .then(response => {"
+            "        if (response.ok) {"
+            "            alert('Ordner erfolgreich erstellt!');"
+            "        } else {"
+            "            alert('Fehler beim Erstellen des Ordners.');"
+            "        }"
+            "    })"
+            "    .catch(error => {"
+            "        console.error('Error:', error);"
+            "    });"
+            "}"
             "</script></head><body><h1>ESP32-Cam Webserver</h1>", currentImage);
 
         // HTML-Button zum Laden des nächsten Bildes
-        const char *html_button = "<button onclick='loadNextImage()'>Nächstes Bild</button>";
+        const char *html_next_button = "<button onclick='loadNextImage()'>Nächstes Bild</button>";
+
+        // Textfeld für den Ordnername
+        const char *html_newFolder_text = "<input type='text' id='folderName' placeholder='Ordnername'>";
+
+        // Button zum Erstellen des Ordners
+        const char *html_newFolder_button = "<button onclick='createFolder()'>Ordner erstellen</button>";
 
         // HTML-Footer
         const char *html_footer = "</body></html>";
@@ -116,7 +144,13 @@ esp_err_t root_handler(httpd_req_t *req)
         httpd_resp_send_chunk(req, html_header, strlen(html_header));
 
         // Den Button senden
-        httpd_resp_send_chunk(req, html_button, strlen(html_button));
+        httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
+
+        // Das Textfeld folderName
+        httpd_resp_send_chunk(req, html_newFolder_text, strlen(html_newFolder_text));
+
+        // Den Button senden
+        httpd_resp_send_chunk(req, html_newFolder_button, strlen(html_newFolder_button));
 
         // Das Bild als HTML-Element einfügen
         httpd_resp_send_chunk(req, html_image, strlen(html_image));
@@ -195,7 +229,37 @@ esp_err_t image_handler(httpd_req_t *req)
     }
 }
 
-// URI-Handler-Struktur http://192.168.2.160/root?PIC_4.JPG
+esp_err_t createFolderHandler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Entered creatFolderHandler");
+
+    // Extrahiere den Ordnername aus den Query-Parametern
+    char folderName[128];
+    size_t folderNameLen = httpd_req_get_url_query_len(req);
+    if (folderNameLen > 0) {
+        if (httpd_req_get_url_query_str(req, folderName, sizeof(folderName)) == ESP_OK) {
+            // Hier könntest du zusätzliche Überprüfungen durchführen oder die Ordnererstellung implementieren
+            // Zum Beispiel: Verwende die Funktion mkdir, um einen Ordner zu erstellen
+            char folderPath[256];
+            snprintf(folderPath, sizeof(folderPath), "/sdcard/%s", folderName);
+            int mkdirResult = mkdir(folderPath, 0777);
+
+            if (mkdirResult == 0) {
+                // Erfolgreiche Antwort senden
+                httpd_resp_sendstr(req, "OK");
+                return ESP_OK;
+            }
+        }
+    }
+
+    // Fehlerhafte Antwort senden
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Server Error");
+    return ESP_FAIL;
+
+    // Fehlerhafte Antwort senden
+    httpd_resp_send(req, "Bad Request", HTTPD_RESP_USE_STRLEN);
+    return ESP_FAIL;
+}
+
 httpd_uri_t root = {
     .uri       = "/root",
     .method    = HTTP_GET,
@@ -207,11 +271,16 @@ static const httpd_uri_t image = {
     .uri       = "/image",
     .method    = HTTP_GET,
     .handler   = image_handler,
-    /* Let's pass response string in user
-     * context to demonstrate it's usage */
     .user_ctx  = NULL
 };
 
+
+static const httpd_uri_t createFolderUri = {
+    .uri       = "/create_folder",
+    .method    = HTTP_GET,
+    .handler   = createFolderHandler,
+    .user_ctx  = NULL
+};
 
 esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 {
@@ -238,7 +307,7 @@ static httpd_handle_t start_webserver(void)
         ESP_LOGI(TAG, "Registering URI handlers");
         httpd_register_uri_handler(server, &root);
         httpd_register_uri_handler(server, &image);
-
+        httpd_register_uri_handler(server, &createFolderUri);
         return server;
     }
 
