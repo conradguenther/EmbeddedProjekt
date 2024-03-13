@@ -30,13 +30,15 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+
+#include "cJSON.h"
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
  */
 #define SD_CARD_MOUNT_POINT "/sdcard"
 
 static const char *TAG = "example";
-
+char selectedFolder[128] = "";
 
 static esp_err_t initi_sd_card(void)
 {  
@@ -99,43 +101,76 @@ esp_err_t root_handler(httpd_req_t *req)
         // HTML-Header
         char html_header[1024];  // Annahme: Ausreichende Größe für den Header
         snprintf(html_header, sizeof(html_header),
-            "<html><head><script>"
-            "var currentImage = %s;"
-            "function loadNextImage() {"
-            "  console.log('Button pressed');"
-            "  currentImage++;"
-            "  location.href = '/root?' + currentImage;"
-            "}"
-            "function createFolder() {"
-            "    var folderName = document.getElementById('folderName').value;"
-            "    if (folderName.trim() === '') {"
-            "        alert('Bitte geben Sie einen Ordnername ein.');"
-            "        return;"
-            "    }"
-            "    fetch('/create_folder?' + folderName, {"
-            "       method: 'GET'"
-            "    })" 
-            "    .then(response => {"
-            "        if (response.ok) {"
-            "            alert('Ordner erfolgreich erstellt!');"
-            "        } else {"
-            "            alert('Fehler beim Erstellen des Ordners.');"
-            "        }"
-            "    })"
-            "    .catch(error => {"
-            "        console.error('Error:', error);"
-            "    });"
-            "}"
-            "</script></head><body><h1>ESP32-Cam Webserver</h1>", currentImage);
+                 "<html><head><script>"
+                 "var currentImage = %s;"
+                 "function loadNextImage() {"
+                 "  console.log('Button pressed');"
+                 "  currentImage++;"
+                 "  location.href = '/root?' + currentImage;"
+                 "}"
+                 "function createFolder() {"
+                 "    var folderName = document.getElementById('folderName').value;"
+                 "    if (folderName.trim() === '') {"
+                 "        alert('Bitte geben Sie einen Ordnername ein.');"
+                 "        return;"
+                 "    }"
+                 "    fetch('/create_folder?' + folderName, {"
+                 "       method: 'GET'"
+                 "    })"
+                 "    .then(response => {"
+                 "        if (response.ok) {"
+                 "            alert('Ordner erfolgreich erstellt!');"
+                 "        } else {"
+                 "            alert('Fehler beim Erstellen des Ordners.');"
+                 "        }"
+                 "    })"
+                 "    .catch(error => {"
+                 "        console.error('Error:', error);"
+                 "    });"
+                 "}"
+                 "</script></head><body><h1>ESP32-Cam Webserver</h1>",
+                 currentImage);
 
         // HTML-Button zum Laden des nächsten Bildes
-        const char *html_next_button = "<button onclick='loadNextImage()'>Nächstes Bild</button>";
+        const char *html_next_button = "<button onclick='loadNextImage()'>Weiter</button>";
 
         // Textfeld für den Ordnername
         const char *html_newFolder_text = "<input type='text' id='folderName' placeholder='Ordnername'>";
 
         // Button zum Erstellen des Ordners
         const char *html_newFolder_button = "<button onclick='createFolder()'>Ordner erstellen</button>";
+
+        // HTML-Dropdown um Folder auszuwählen
+        const char *html_dropdown_folder = "<script>"
+                                        "function loadFolderNames() {"
+                                        "    fetch('/get_folder_names')"
+                                        "        .then(response => response.json())"
+                                        "        .then(data => {"
+                                        "            const folderSelect = document.getElementById('folderSelect');"
+                                        "            folderSelect.innerHTML = '';"
+                                        "            data.forEach(folderName => {"
+                                        "                const option = document.createElement('option');"
+                                        "                option.value = folderName;"
+                                        "                option.text = folderName;"
+                                        "                folderSelect.appendChild(option);"
+                                        "            });"
+                                        "        })"
+                                        "        .catch(error => {"
+                                        "            console.error('Fehler beim Laden der Ordnerliste:', error);"
+                                        "        });"
+                                        "}"
+                                        "loadFolderNames();"
+                                        "function loadFolderImages() {"
+                                        "   const selectedFolder = document.getElementById('folderSelect').value;"
+                                        "   fetch(`/change_selected_folder?${selectedFolder}`)"
+                                        "   .catch(error => {"
+                                        "       console.error('Fehler beim Laden der Bilder:', error);"
+                                        "   });"
+                                        "}"
+                                        "</script>"
+                                        "<label for='folderSelect'>Ordner: </label>"
+                                        "<select id='folderSelect' onchange='loadFolderImages()'>"
+                                        "</select>";
 
         // HTML-Footer
         const char *html_footer = "</body></html>";
@@ -151,6 +186,9 @@ esp_err_t root_handler(httpd_req_t *req)
 
         // Den Button senden
         httpd_resp_send_chunk(req, html_newFolder_button, strlen(html_newFolder_button));
+
+        // Dropdownmenü
+        httpd_resp_send_chunk(req, html_dropdown_folder, strlen(html_dropdown_folder));
 
         // Das Bild als HTML-Element einfügen
         httpd_resp_send_chunk(req, html_image, strlen(html_image));
@@ -260,6 +298,66 @@ esp_err_t createFolderHandler(httpd_req_t *req) {
     return ESP_FAIL;
 }
 
+
+esp_err_t getFolderNamesHandler(httpd_req_t *req) {
+    // Öffne das Verzeichnis auf der SD-Karte
+    DIR *dir = opendir("/sdcard");  // Passe den Pfad entsprechend an
+    if (!dir) {
+        ESP_LOGE(TAG, "Failed to open directory");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Server Error");
+        return ESP_FAIL;
+    }
+
+    cJSON *folderArray = cJSON_CreateArray();
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_DIR) {
+            // Ignoriere die speziellen Verzeichnisse "." und ".."
+            if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                cJSON_AddItemToArray(folderArray, cJSON_CreateString(entry->d_name));
+            }
+        }
+    }
+
+    closedir(dir);
+
+    const char *folderNamesJson = cJSON_PrintUnformatted(folderArray);
+    cJSON_Delete(folderArray);
+
+    // Antworte mit dem JSON-Array der Ordner
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, folderNamesJson);
+
+    // Freigabe des JSON-Strings
+    free((void *)folderNamesJson);
+
+    return ESP_OK;
+}
+
+esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
+{
+    // Holen des Dateinamens aus dem Query-String
+    char foldername[127];
+    if (httpd_req_get_url_query_str(req, foldername, sizeof(foldername)) == ESP_OK)
+    {
+        if (strlen(foldername) < sizeof(selectedFolder)) {
+            strcpy(selectedFolder, foldername);
+            ESP_LOGI(TAG, "selectedFolder: %s", foldername);
+            return ESP_OK;
+        } else {
+            ESP_LOGE(TAG, "Fehler beim Ändern des Ordners");
+            httpd_resp_send_404(req);
+            return ESP_FAIL;
+        }
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Fehler beim Ändern des Ordners");
+        httpd_resp_send_404(req);
+        return ESP_FAIL;
+    }
+}
+
 httpd_uri_t root = {
     .uri       = "/root",
     .method    = HTTP_GET,
@@ -279,6 +377,20 @@ static const httpd_uri_t createFolderUri = {
     .uri       = "/create_folder",
     .method    = HTTP_GET,
     .handler   = createFolderHandler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t getFolderNamesEndpoint = {
+    .uri       = "/get_folder_names",
+    .method    = HTTP_GET,
+    .handler   = getFolderNamesHandler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t change_selected_folder = {
+    .uri       = "/change_selected_folder",
+    .method    = HTTP_GET,
+    .handler   = changeSelectedFolderHandler,
     .user_ctx  = NULL
 };
 
@@ -308,6 +420,8 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &root);
         httpd_register_uri_handler(server, &image);
         httpd_register_uri_handler(server, &createFolderUri);
+        httpd_register_uri_handler(server, &getFolderNamesEndpoint);
+        httpd_register_uri_handler(server, &change_selected_folder);
         return server;
     }
 
@@ -344,6 +458,8 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
         *server = start_webserver();
     }
 }
+
+
 
 void app_main(void)
 {
