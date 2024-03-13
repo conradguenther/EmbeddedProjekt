@@ -245,8 +245,21 @@ esp_err_t root_handler(httpd_req_t *req)
 
         // HTML-Dropdown um Folder auszuwählen
         const char *html_dropdown_folder = "<script>"
-                                           "function loadFolderNames() {"
+                                           "function stopSerie() {"
                                            "    fetch('/get_folder_names')"
+                                           "        .catch(error => {"
+                                           "            console.error('Fehler beim Stoppen der Serie: ', error);"
+                                           "        });"
+                                           "}"
+                                           "</script>"
+                                           "<button onclick='stopSerie()'>Serie beenden</button>";
+
+        char html_current_folder_info[64];
+        snprintf(html_current_folder_info, sizeof(html_current_folder_info), "<p>Aktuell: %s</p>", selectedFolder);
+
+        const char *html_stop_button = "<script>"
+                                           "function stopSerie() {"
+                                           "    fetch('/stop_serie')"
                                            "        .then(response => response.json())"
                                            "        .then(data => {"
                                            "            const folderSelect = document.getElementById('folderSelect');"
@@ -275,9 +288,6 @@ esp_err_t root_handler(httpd_req_t *req)
                                            "<select id='folderSelect' onchange='changeSelectedFolder()'>"
                                            "</select>";
 
-        char html_current_folder_info[64];
-        snprintf(html_current_folder_info, sizeof(html_current_folder_info), "<p>Aktuell: %s</p>", selectedFolder);
-
         // HTML-Button zum Laden des nächsten Bildes
         const char *html_next_button = "<button onclick='loadNextImage()'>Weiter</button>";
 
@@ -299,6 +309,9 @@ esp_err_t root_handler(httpd_req_t *req)
 
         // Aktueller Ordner
         httpd_resp_send_chunk(req, html_current_folder_info, strlen(html_current_folder_info));
+
+        // Der Button stoppt Bildserie
+        httpd_resp_send_chunk(req, html_stop_button, strlen(html_stop_button));
 
         // Der Button nächstes Bild
         httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
@@ -471,6 +484,24 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
     }
 }
 
+
+TaskHandle_t taskHandle;
+
+esp_err_t startPhotoSerieHandler(httpd_req_t *req)
+{
+   // Lösche die Aufgabe
+    vTaskDelete(taskHandle);
+    return ESP_OK;
+}
+
+
+esp_err_t stopPhotoSerieHandler(httpd_req_t *req)
+{
+   // Lösche die Aufgabe
+    vTaskDelete(taskHandle);
+    return ESP_OK;
+}
+
 httpd_uri_t root = {
     .uri       = "/root",
     .method    = HTTP_GET,
@@ -507,6 +538,13 @@ static const httpd_uri_t change_selected_folder = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t stop_serie = {
+    .uri       = "/stop_serie",
+    .method    = HTTP_GET,
+    .handler   = stopPhotoSerieHandler,
+    .user_ctx  = NULL
+};
+
 esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 {
     if (strcmp("/image", req->uri) == 0) {
@@ -535,6 +573,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &createFolderUri);
         httpd_register_uri_handler(server, &getFolderNamesEndpoint);
         httpd_register_uri_handler(server, &change_selected_folder);
+        httpd_register_uri_handler(server, &stop_serie);
         return server;
     }
 
@@ -585,6 +624,18 @@ void photoTask() {
     vTaskDelete(NULL); // Beende den Task nach 10 Fotos
 }
 
+void codeForTask2_core( void * parameter )
+{
+   for (;;)
+   {
+      printf("codeForTask2 is running on Core: ");
+      printf("%d\n", xPortGetCoreID());
+      vTaskDelay(20000 / portTICK_PERIOD_MS);
+   }
+
+}
+
+
 void app_main(void)
 {
     esp_err_t err;
@@ -625,5 +676,5 @@ void app_main(void)
     /* Start the server for the first time */
     server = start_webserver();
 
-    photoTask();
+    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
 }
