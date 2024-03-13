@@ -33,6 +33,8 @@
 
 #include "esp_camera.h"
 
+#include "esp_timer.h"
+
 #include "cJSON.h"
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
@@ -42,15 +44,11 @@
 static const char *TAG = "example";
 char selectedFolder[32] = "DEFAULT";
 
-
 /*----------------------------------
 ---------- Kamera-------------------
 -----------------------------------*/
 // Funktion zum Initialisieren der Kamera
 #define BUTTON_PIN 3
-
-static void button_handler(void *arg);
-static void take_photo(void *arg);
 
 #define CAM_PIN_PWDN    32 
 #define CAM_PIN_RESET   -1 //software reset will be performed
@@ -161,6 +159,33 @@ int sd_card_count_files() {
     closedir(dir);
 
     return fileCount;
+}
+
+
+static void take_photo()
+{
+    int nextImage = sd_card_count_files() + 1;
+    ESP_LOGI(TAG, "Starting Taking Picture!\n");
+
+    camera_fb_t *pic = esp_camera_fb_get();
+
+    char photo_name[64];
+    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", selectedFolder, nextImage);
+    // Time Photo taken: pic->timestamp.tv_sec
+    FILE *file = fopen(photo_name, "w");
+    if (file == NULL)
+    {
+        printf("err: fopen failed\n");
+    }
+    else
+    {
+        fwrite(pic->buf, 1, pic->len, file);
+        fclose(file);
+    }
+    
+    esp_camera_fb_return(pic);
+    vTaskDelete(NULL);
+    printf("Finished Taking Picture!\n");
 }
 
 
@@ -547,49 +572,17 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-// Funktion zum Speichern eines Bildes auf der SD-Karte
-esp_err_t saveImageToSDCard(const char *filename, const uint8_t *data, size_t size) {
-    // Pfade für die Datei auf der SD-Karte erstellen
-    char filepath[64];
-    snprintf(filepath, sizeof(filepath), "%s/%s/%s", SD_CARD_MOUNT_POINT, selectedFolder , filename);
+// Zählvariable für die Anzahl der Fotos
+int photoCount = 0;
 
-    // Datei zum Schreiben öffnen
-    FILE *file = fopen(filepath, "wb");
-    if (!file) {
-        ESP_LOGE(TAG, "Fehler beim Öffnen der Datei zum Schreiben");
-        return ESP_FAIL;
+// Thread für das Aufnehmen von Fotos
+void photoTask() {
+    while (photoCount < 10) {
+        take_photo();
+        photoCount++;
+        vTaskDelay(30000 / portTICK_PERIOD_MS); // Warte 1 Sekunde zwischen den Fotos
     }
-
-    // Daten in die Datei schreiben
-    size_t bytes_written = fwrite(data, 1, size, file);
-    fclose(file);
-
-    // Überprüfe, ob alle Daten geschrieben wurden
-    if (bytes_written != size) {
-        ESP_LOGE(TAG, "Fehler beim Schreiben der Daten in die Datei");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Bild erfolgreich auf der SD-Karte gespeichert: %s", filename);
-    return ESP_OK;
-}
-
-// Erweiterte captureImage-Funktion zum Speichern auf der SD-Karte
-esp_err_t captureImageAndSave() {
-    // Kamera-Capture-Konfiguration
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-        ESP_LOGE(TAG, "Kamera-Capture fehlgeschlagen");
-        return ESP_FAIL;
-    }
-
-    // Speichere das Bild auf der SD-Karte
-    esp_err_t saveResult = saveImageToSDCard("captured_image.jpg", fb->buf, fb->len);
-
-    // Gebe den Framebuffer frei
-    esp_camera_fb_return(fb);
-
-    return saveResult;
+    vTaskDelete(NULL); // Beende den Task nach 10 Fotos
 }
 
 void app_main(void)
@@ -631,4 +624,6 @@ void app_main(void)
 
     /* Start the server for the first time */
     server = start_webserver();
+
+    photoTask();
 }
