@@ -31,6 +31,8 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include "esp_camera.h"
+
 #include "cJSON.h"
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
@@ -38,8 +40,84 @@
 #define SD_CARD_MOUNT_POINT "/sdcard"
 
 static const char *TAG = "example";
-char selectedFolder[128] = "";
+char selectedFolder[32] = "DEFAULT";
 
+
+/*----------------------------------
+---------- Kamera-------------------
+-----------------------------------*/
+// Funktion zum Initialisieren der Kamera
+#define BUTTON_PIN 3
+
+static void button_handler(void *arg);
+static void take_photo(void *arg);
+
+#define CAM_PIN_PWDN    32 
+#define CAM_PIN_RESET   -1 //software reset will be performed
+#define CAM_PIN_XCLK    0
+#define CAM_PIN_SIOD    26
+#define CAM_PIN_SIOC    27
+
+#define CAM_PIN_D7      35
+#define CAM_PIN_D6      34
+#define CAM_PIN_D5      39
+#define CAM_PIN_D4      36
+#define CAM_PIN_D3      21
+#define CAM_PIN_D2      19
+#define CAM_PIN_D1      18
+#define CAM_PIN_D0       5
+#define CAM_PIN_VSYNC   25
+#define CAM_PIN_HREF    23
+#define CAM_PIN_PCLK    22
+
+#define CONFIG_XCLK_FREQ 20000000 
+#define CONFIG_OV2640_SUPPORT 1
+#define CONFIG_OV7725_SUPPORT 1
+#define CONFIG_OV3660_SUPPORT 1
+#define CONFIG_OV5640_SUPPORT 1
+
+static esp_err_t init_camera(void)
+{
+    camera_config_t camera_config = {
+        .pin_pwdn  = CAM_PIN_PWDN,
+        .pin_reset = CAM_PIN_RESET,
+        .pin_xclk = CAM_PIN_XCLK,
+        .pin_sccb_sda = CAM_PIN_SIOD,
+        .pin_sccb_scl = CAM_PIN_SIOC,
+
+        .pin_d7 = CAM_PIN_D7,
+        .pin_d6 = CAM_PIN_D6,
+        .pin_d5 = CAM_PIN_D5,
+        .pin_d4 = CAM_PIN_D4,
+        .pin_d3 = CAM_PIN_D3,
+        .pin_d2 = CAM_PIN_D2,
+        .pin_d1 = CAM_PIN_D1,
+        .pin_d0 = CAM_PIN_D0,
+        .pin_vsync = CAM_PIN_VSYNC,
+        .pin_href = CAM_PIN_HREF,
+        .pin_pclk = CAM_PIN_PCLK,
+
+        .xclk_freq_hz = CONFIG_XCLK_FREQ,
+        .ledc_timer = LEDC_TIMER_0,
+        .ledc_channel = LEDC_CHANNEL_0,
+
+        .pixel_format = PIXFORMAT_JPEG,
+        .frame_size = FRAMESIZE_UXGA,
+
+        .jpeg_quality = 12,
+        .fb_count = 1,
+        .grab_mode = CAMERA_GRAB_WHEN_EMPTY};//CAMERA_GRAB_LATEST. Sets when buffers should be filled
+    esp_err_t err = esp_camera_init(&camera_config);
+    if (err != ESP_OK)
+    {
+        return err;
+    }
+    return ESP_OK;
+}
+
+/*----------------------------------
+---------- SD-Karte-------------------
+-----------------------------------*/
 static esp_err_t initi_sd_card(void)
 {  
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -59,8 +137,11 @@ static esp_err_t initi_sd_card(void)
 
 
 int sd_card_count_files() {
+    // Dateipfad auf der SD-Karte
+    char folder_path[512];
+    snprintf(folder_path, sizeof(folder_path), "/sdcard/%s", selectedFolder);
     // Öffne das Verzeichnis auf der SD-Karte
-    DIR* dir = opendir("/sdcard");
+    DIR* dir = opendir(folder_path);
     if (!dir) {
         printf("Fehler beim Öffnen des Verzeichnisses auf der SD-Karte.\n");
         return -1;
@@ -86,13 +167,13 @@ int sd_card_count_files() {
 esp_err_t root_handler(httpd_req_t *req)
 {
     // Holen des Dateinamens aus dem Query-String
-    char currentImage[15];
+    char currentImage[8];
     int imageCount = sd_card_count_files();
 
     if (httpd_req_get_url_query_str(req, currentImage, sizeof(currentImage)) == ESP_OK)
     {
 
-        char html_image[512];
+        char html_image[64];
         snprintf(html_image, sizeof(html_image), "<img src='/image?PIC_%s.JPG' style='width:100%%'/>", currentImage);
 
         if(atoi(currentImage) >= imageCount) {
@@ -131,9 +212,6 @@ esp_err_t root_handler(httpd_req_t *req)
                  "</script></head><body><h1>ESP32-Cam Webserver</h1>",
                  currentImage);
 
-        // HTML-Button zum Laden des nächsten Bildes
-        const char *html_next_button = "<button onclick='loadNextImage()'>Weiter</button>";
-
         // Textfeld für den Ordnername
         const char *html_newFolder_text = "<input type='text' id='folderName' placeholder='Ordnername'>";
 
@@ -142,53 +220,63 @@ esp_err_t root_handler(httpd_req_t *req)
 
         // HTML-Dropdown um Folder auszuwählen
         const char *html_dropdown_folder = "<script>"
-                                        "function loadFolderNames() {"
-                                        "    fetch('/get_folder_names')"
-                                        "        .then(response => response.json())"
-                                        "        .then(data => {"
-                                        "            const folderSelect = document.getElementById('folderSelect');"
-                                        "            folderSelect.innerHTML = '';"
-                                        "            data.forEach(folderName => {"
-                                        "                const option = document.createElement('option');"
-                                        "                option.value = folderName;"
-                                        "                option.text = folderName;"
-                                        "                folderSelect.appendChild(option);"
-                                        "            });"
-                                        "        })"
-                                        "        .catch(error => {"
-                                        "            console.error('Fehler beim Laden der Ordnerliste:', error);"
-                                        "        });"
-                                        "}"
-                                        "loadFolderNames();"
-                                        "function loadFolderImages() {"
-                                        "   const selectedFolder = document.getElementById('folderSelect').value;"
-                                        "   fetch(`/change_selected_folder?${selectedFolder}`)"
-                                        "   .catch(error => {"
-                                        "       console.error('Fehler beim Laden der Bilder:', error);"
-                                        "   });"
-                                        "}"
-                                        "</script>"
-                                        "<label for='folderSelect'>Ordner: </label>"
-                                        "<select id='folderSelect' onchange='loadFolderImages()'>"
-                                        "</select>";
+                                           "function loadFolderNames() {"
+                                           "    fetch('/get_folder_names')"
+                                           "        .then(response => response.json())"
+                                           "        .then(data => {"
+                                           "            const folderSelect = document.getElementById('folderSelect');"
+                                           "            folderSelect.innerHTML = '';"
+                                           "            data.forEach(folderName => {"
+                                           "                const option = document.createElement('option');"
+                                           "                option.value = folderName;"
+                                           "                option.text = folderName;"
+                                           "                folderSelect.appendChild(option);"
+                                           "            });"
+                                           "        })"
+                                           "        .catch(error => {"
+                                           "            console.error('Fehler beim Laden der Ordnerliste:', error);"
+                                           "        });"
+                                           "}"
+                                           "loadFolderNames();"
+                                           "function changeSelectedFolder() {"
+                                           "   const selectedFolder = document.getElementById('folderSelect').value;"
+                                           "   fetch(`/change_selected_folder?${selectedFolder}`)"
+                                           "   .catch(error => {"
+                                           "       console.error('Fehler beim Laden der Bilder:', error);"
+                                           "   });"
+                                           "}"
+                                           "</script>"
+                                           "<label for='folderSelect'>Ordner: </label>"
+                                           "<select id='folderSelect' onchange='changeSelectedFolder()'>"
+                                           "</select>";
+
+        char html_current_folder_info[64];
+        snprintf(html_current_folder_info, sizeof(html_current_folder_info), "<p>Aktuell: %s</p>", selectedFolder);
+
+        // HTML-Button zum Laden des nächsten Bildes
+        const char *html_next_button = "<button onclick='loadNextImage()'>Weiter</button>";
 
         // HTML-Footer
         const char *html_footer = "</body></html>";
 
+
         // Den Header senden
         httpd_resp_send_chunk(req, html_header, strlen(html_header));
-
-        // Den Button senden
-        httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
 
         // Das Textfeld folderName
         httpd_resp_send_chunk(req, html_newFolder_text, strlen(html_newFolder_text));
 
-        // Den Button senden
+        // Der Button neuer Ordner
         httpd_resp_send_chunk(req, html_newFolder_button, strlen(html_newFolder_button));
 
         // Dropdownmenü
         httpd_resp_send_chunk(req, html_dropdown_folder, strlen(html_dropdown_folder));
+
+        // Aktueller Ordner
+        httpd_resp_send_chunk(req, html_current_folder_info, strlen(html_current_folder_info));
+
+        // Der Button nächstes Bild
+        httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
 
         // Das Bild als HTML-Element einfügen
         httpd_resp_send_chunk(req, html_image, strlen(html_image));
@@ -212,12 +300,12 @@ esp_err_t root_handler(httpd_req_t *req)
 esp_err_t image_handler(httpd_req_t *req)
 {
     // Holen des Dateinamens aus dem Query-String
-    char filename[127];
+    char filename[16];
     if (httpd_req_get_url_query_str(req, filename, sizeof(filename)) == ESP_OK)
     {
         // Dateipfad auf der SD-Karte
-        char file_path[256];
-        snprintf(file_path, sizeof(file_path), "/sdcard/%s", filename);
+        char file_path[64];
+        snprintf(file_path, sizeof(file_path), "/sdcard/%s/%s", selectedFolder, filename);
 
         // Öffne die Datei auf der SD-Karte
         FILE *file = fopen(file_path, "rb");
@@ -271,7 +359,7 @@ esp_err_t createFolderHandler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Entered creatFolderHandler");
 
     // Extrahiere den Ordnername aus den Query-Parametern
-    char folderName[128];
+    char folderName[32];
     size_t folderNameLen = httpd_req_get_url_query_len(req);
     if (folderNameLen > 0) {
         if (httpd_req_get_url_query_str(req, folderName, sizeof(folderName)) == ESP_OK) {
@@ -337,7 +425,7 @@ esp_err_t getFolderNamesHandler(httpd_req_t *req) {
 esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
 {
     // Holen des Dateinamens aus dem Query-String
-    char foldername[127];
+    char foldername[32];
     if (httpd_req_get_url_query_str(req, foldername, sizeof(foldername)) == ESP_OK)
     {
         if (strlen(foldername) < sizeof(selectedFolder)) {
@@ -459,11 +547,67 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
+// Funktion zum Speichern eines Bildes auf der SD-Karte
+esp_err_t saveImageToSDCard(const char *filename, const uint8_t *data, size_t size) {
+    // Pfade für die Datei auf der SD-Karte erstellen
+    char filepath[64];
+    snprintf(filepath, sizeof(filepath), "%s/%s/%s", SD_CARD_MOUNT_POINT, selectedFolder , filename);
 
+    // Datei zum Schreiben öffnen
+    FILE *file = fopen(filepath, "wb");
+    if (!file) {
+        ESP_LOGE(TAG, "Fehler beim Öffnen der Datei zum Schreiben");
+        return ESP_FAIL;
+    }
+
+    // Daten in die Datei schreiben
+    size_t bytes_written = fwrite(data, 1, size, file);
+    fclose(file);
+
+    // Überprüfe, ob alle Daten geschrieben wurden
+    if (bytes_written != size) {
+        ESP_LOGE(TAG, "Fehler beim Schreiben der Daten in die Datei");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Bild erfolgreich auf der SD-Karte gespeichert: %s", filename);
+    return ESP_OK;
+}
+
+// Erweiterte captureImage-Funktion zum Speichern auf der SD-Karte
+esp_err_t captureImageAndSave() {
+    // Kamera-Capture-Konfiguration
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+        ESP_LOGE(TAG, "Kamera-Capture fehlgeschlagen");
+        return ESP_FAIL;
+    }
+
+    // Speichere das Bild auf der SD-Karte
+    esp_err_t saveResult = saveImageToSDCard("captured_image.jpg", fb->buf, fb->len);
+
+    // Gebe den Framebuffer frei
+    esp_camera_fb_return(fb);
+
+    return saveResult;
+}
 
 void app_main(void)
 {
-    initi_sd_card();
+    esp_err_t err;
+    err = init_camera();
+    if (err != ESP_OK)
+    {
+        printf("err: %s\n", esp_err_to_name(err));
+        return;
+    }
+    
+    err = initi_sd_card();
+    if (err != ESP_OK)
+    {
+        printf("err: %s\n", esp_err_to_name(err));
+        return;
+    }
 
     static httpd_handle_t server = NULL;
 
