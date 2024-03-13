@@ -43,6 +43,7 @@
 
 static const char *TAG = "example";
 char selectedFolder[32] = "DEFAULT";
+bool isSerieRunning = false;
 
 /*----------------------------------
 ---------- Kamera-------------------
@@ -244,22 +245,49 @@ esp_err_t root_handler(httpd_req_t *req)
         const char *html_newFolder_button = "<button onclick='createFolder()'>Ordner erstellen</button>";
 
         // HTML-Dropdown um Folder auszuwählen
-        const char *html_dropdown_folder = "<script>"
-                                           "function stopSerie() {"
-                                           "    fetch('/get_folder_names')"
+        const char *html_stop_button = "<script>"
+                                       "function stopSerie() {"
+                                       "    fetch('/stop_serie')"
+                                       "        .then(response => {"
+                                       "            if (response.ok) {"
+                                       "                alert('Serie beendet.');"
+                                       "                location.reload();"
+                                       "            } else {"
+                                       "                alert('Serie konnte nicht beendet werden.');"
+                                       "            }"
+                                       "        })"
+                                       "        .catch(error => {"
+                                       "            console.error('Fehler beim Stoppen der Serie: ', error);"
+                                       "        });"
+                                       "}"
+                                       "</script>"
+                                       "<button onclick='stopSerie()'>Serie beenden</button>";
+
+        // HTML-Dropdown um Folder auszuwählen
+        const char *html_start_button     = "<script>"
+                                           "function startSerie() {"
+                                           "    fetch('/start_serie')"
+                                           "        .then(response => {"
+                                           "            if (response.ok) {"
+                                           "                alert('Serie gestartet');"
+                                           "                location.reload();"
+                                           "            } else {"
+                                           "                alert('Serie konnte nicht gestartet werden.');"
+                                           "            }"
+                                           "        })"
                                            "        .catch(error => {"
-                                           "            console.error('Fehler beim Stoppen der Serie: ', error);"
+                                           "            console.error('Fehler beim Starten der Serie: ', error);"
                                            "        });"
                                            "}"
                                            "</script>"
-                                           "<button onclick='stopSerie()'>Serie beenden</button>";
+                                           "<button onclick='startSerie()'>Serie starten</button>";
 
         char html_current_folder_info[64];
         snprintf(html_current_folder_info, sizeof(html_current_folder_info), "<p>Aktuell: %s</p>", selectedFolder);
 
-        const char *html_stop_button = "<script>"
-                                           "function stopSerie() {"
-                                           "    fetch('/stop_serie')"
+        const char *html_dropdown_folder = "<script>"
+                                           "function loadFolderNames() {"
+                                           "    fetch('/get_folder_names')"
                                            "        .then(response => response.json())"
                                            "        .then(data => {"
                                            "            const folderSelect = document.getElementById('folderSelect');"
@@ -310,8 +338,13 @@ esp_err_t root_handler(httpd_req_t *req)
         // Aktueller Ordner
         httpd_resp_send_chunk(req, html_current_folder_info, strlen(html_current_folder_info));
 
-        // Der Button stoppt Bildserie
-        httpd_resp_send_chunk(req, html_stop_button, strlen(html_stop_button));
+        if(isSerieRunning){
+            // Der Button stoppt Bildserie
+            httpd_resp_send_chunk(req, html_stop_button, strlen(html_stop_button));
+        } else {
+            // Der Button startet Bildserie
+            httpd_resp_send_chunk(req, html_start_button, strlen(html_start_button));
+        }
 
         // Der Button nächstes Bild
         httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
@@ -487,18 +520,34 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
 
 TaskHandle_t taskHandle;
 
+void codeForTask2_core( void * parameter )
+{
+   for (;;)
+   {
+      printf("codeForTask2 is running on Core: ");
+      printf("%d\n", xPortGetCoreID());
+      vTaskDelay(5000 / portTICK_PERIOD_MS);
+   }
+
+}
+
 esp_err_t startPhotoSerieHandler(httpd_req_t *req)
 {
-   // Lösche die Aufgabe
-    vTaskDelete(taskHandle);
+    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
+    // Erfolgreiche Antwort senden
+    isSerieRunning = true;
+    httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
 
-
 esp_err_t stopPhotoSerieHandler(httpd_req_t *req)
 {
-   // Lösche die Aufgabe
+    ESP_LOGI(TAG, "Beendet Serie");
+    // Lösche die Aufgabe
     vTaskDelete(taskHandle);
+    // Erfolgreiche Antwort senden
+    isSerieRunning = false;
+    httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
 
@@ -538,6 +587,13 @@ static const httpd_uri_t change_selected_folder = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t start_serie = {
+    .uri       = "/start_serie",
+    .method    = HTTP_GET,
+    .handler   = startPhotoSerieHandler,
+    .user_ctx  = NULL
+};
+
 static const httpd_uri_t stop_serie = {
     .uri       = "/stop_serie",
     .method    = HTTP_GET,
@@ -573,6 +629,7 @@ static httpd_handle_t start_webserver(void)
         httpd_register_uri_handler(server, &createFolderUri);
         httpd_register_uri_handler(server, &getFolderNamesEndpoint);
         httpd_register_uri_handler(server, &change_selected_folder);
+        httpd_register_uri_handler(server, &start_serie);
         httpd_register_uri_handler(server, &stop_serie);
         return server;
     }
@@ -624,17 +681,6 @@ void photoTask() {
     vTaskDelete(NULL); // Beende den Task nach 10 Fotos
 }
 
-void codeForTask2_core( void * parameter )
-{
-   for (;;)
-   {
-      printf("codeForTask2 is running on Core: ");
-      printf("%d\n", xPortGetCoreID());
-      vTaskDelay(20000 / portTICK_PERIOD_MS);
-   }
-
-}
-
 
 void app_main(void)
 {
@@ -675,6 +721,4 @@ void app_main(void)
 
     /* Start the server for the first time */
     server = start_webserver();
-
-    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
 }
