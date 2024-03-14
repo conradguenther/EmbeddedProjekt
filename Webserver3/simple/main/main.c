@@ -43,7 +43,7 @@
 
 static const char *TAG = "example";
 char selectedFolder[32] = "DEFAULT";
-char serieFolder[32] = "";
+char serieFolder[32] = "TEST2";
 int serieRange = 0; // Seriendauer in Tagen
 int serieFreuqenz = 0; // Zeit zwischen Bildern in Stunden
 bool isSerieRunning = false;
@@ -166,15 +166,15 @@ int sd_card_count_files(char *folder) {
 }
 
 
-static void take_photo(char *folder)
+static void take_photo()
 {
-    int nextImage = sd_card_count_files(folder) + 1;
+    int nextImage = sd_card_count_files(serieFolder) + 1;
     ESP_LOGI(TAG, "Starting Taking Picture!\n");
 
     camera_fb_t *pic = esp_camera_fb_get();
     ESP_LOGI(TAG, "Hierhallo 1.1");
     char photo_name[128];
-    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", folder, nextImage);
+    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", serieFolder, nextImage);
     ESP_LOGI(TAG, "Hierhallo 1.2");
     // Time Photo taken: pic->timestamp.tv_sec
     FILE *file = fopen(photo_name, "w");
@@ -193,7 +193,6 @@ static void take_photo(char *folder)
 
     printf("Finished Taking Picture!\n");
 }
-
 
 esp_err_t root_handler(httpd_req_t *req)
 {
@@ -356,7 +355,7 @@ esp_err_t root_handler(httpd_req_t *req)
         const char *html_next_button = "<button onclick='loadNextImage(1)'>Weiter</button>";
 
         // HTML-Button zum Laden des vorhergehenden Bildes
-        const char *html_back_button = "<button onclick='loadNextImage(-1)'>Zurück</button>";
+        const char *html_back_button = "<button onclick='loadNextImage(-1)'>Zurueck</button>";
 
         //HTML-Zeilensprung
         const char *html_jump = "<br>";
@@ -575,25 +574,41 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
     }
 }
 
+// Ereignisgruppe definieren
+ESP_EVENT_DEFINE_BASE(MY_EVENTS);
+
+// Ereignisse definieren
+enum {
+    EVENT_PHOTO_CAPTURED,
+};
 
 TaskHandle_t taskHandle;
 
-void codeForTask2_core()
+void codeForTask2_core(void *pvParameters)
 {
     strcpy(serieFolder, selectedFolder);
-    ESP_LOGI(TAG, "hierhallo 1");
-    take_photo(serieFolder);
+
+    take_photo();
+
     int repetitions = (24 * serieRange) / serieFreuqenz;
-    ESP_LOGI(TAG, "hierhallo 2");
-    for (int i = 0; i<repetitions; i++)
+
+    for (int i = 0; i<5; i++)
     {
-        ESP_LOGI(TAG, "hierhallo 3");
         //vTaskDelay((3600000*serieFreuqenz) / portTICK_PERIOD_MS); //in Stunden
         vTaskDelay((60000*serieFreuqenz) / portTICK_PERIOD_MS); //in Minuten
-        take_photo(serieFolder);
-        ESP_LOGI(TAG, "hierhallo 4");
+        take_photo();
     }
     vTaskDelete(taskHandle);
+}
+
+// Ereignisbehandlungsfunktion
+static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
+    if (event_id == EVENT_PHOTO_CAPTURED) {
+        // Foto wurde erfasst, führe die entsprechende Aktion aus
+        // Aufgaben auf dem Hauptkern können hier ausgeführt werden
+        printf("Foto wurde erfasst!\n");
+        printf("Hoffentlich 0: %d", xPortGetCoreID());
+    }
 }
 
 esp_err_t startPhotoSerieHandler(httpd_req_t *req)
@@ -615,9 +630,7 @@ esp_err_t startPhotoSerieHandler(httpd_req_t *req)
         }
     }
 
-    //take_photo(selectedFolder);
-    codeForTask2_core();
-    //xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
+    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*3, NULL, 2, &taskHandle, 1);
     // Erfolgreiche Antwort senden
     isSerieRunning = true;
     httpd_resp_sendstr(req, "OK");
@@ -752,16 +765,6 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-void codeForTask3_core()
-{
-    #ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
-#endif // CONFIG_EXAMPLE_CONNECT_WIFI
-    static httpd_handle_t server = NULL;
-    server = start_webserver();
-}
-
 void app_main(void)
 {
     esp_err_t err;
@@ -779,6 +782,7 @@ void app_main(void)
         return;
     }
 
+    static httpd_handle_t server = NULL;
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
@@ -793,8 +797,15 @@ void app_main(void)
     /* Register event handlers to stop the server when Wi-Fi or Ethernet is disconnected,
      * and re-start it upon connection.
      */
+#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
+#endif // CONFIG_EXAMPLE_CONNECT_WIFI
+    
+    server = start_webserver();
 
-
-    /* Start the server for the first time */
-    xTaskCreatePinnedToCore(codeForTask3_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
+    // Registriere die Ereignisbehandlungsfunktion für das Ereignis
+    //ESP_ERROR_CHECK(esp_event_loop_create_default());
+    //ESP_ERROR_CHECK(esp_event_handler_register_with(NULL, MY_EVENTS, EVENT_PHOTO_CAPTURED, event_handler, NULL));
+    
 }
