@@ -43,7 +43,7 @@
 
 static const char *TAG = "example";
 char selectedFolder[32] = "DEFAULT";
-char serieFolder[32] = "TEST2";
+char serieFolder[32] = "";
 int serieRange = 0; // Seriendauer in Tagen
 int serieFreuqenz = 0; // Zeit zwischen Bildern in Stunden
 bool isSerieRunning = false;
@@ -129,7 +129,7 @@ static esp_err_t initi_sd_card(void)
         .max_files = 3,
     };
     sdmmc_card_t *card;
-    esp_err_t err = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
     if (err != ESP_OK)
     {
         return err;
@@ -140,8 +140,8 @@ static esp_err_t initi_sd_card(void)
 
 int sd_card_count_files(char *folder) {
     // Dateipfad auf der SD-Karte
-    char folder_path[512];
-    snprintf(folder_path, sizeof(folder_path), "/sdcard/%s", selectedFolder);
+    char folder_path[64];
+    snprintf(folder_path, sizeof(folder_path), "%s/%s", SD_CARD_MOUNT_POINT, folder);
     // Öffne das Verzeichnis auf der SD-Karte
     DIR* dir = opendir(folder_path);
     if (!dir) {
@@ -172,13 +172,13 @@ static void take_photo()
     ESP_LOGI(TAG, "Starting Taking Picture!\n");
 
     camera_fb_t *pic = esp_camera_fb_get();
-    ESP_LOGI(TAG, "Hierhallo 1.1");
-    char photo_name[128];
-    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", serieFolder, nextImage);
-    ESP_LOGI(TAG, "Hierhallo 1.2");
+
+    char photo_name[64];
+    sprintf(photo_name, "%s/%s/PIC_%d.JPG",SD_CARD_MOUNT_POINT , serieFolder, nextImage);
+
     // Time Photo taken: pic->timestamp.tv_sec
     FILE *file = fopen(photo_name, "w");
-    ESP_LOGI(TAG, "Hierhallo 1.3");
+
     if (file == NULL)
     {
         printf("err: fopen failed\n");
@@ -432,7 +432,7 @@ esp_err_t image_handler(httpd_req_t *req)
     {
         // Dateipfad auf der SD-Karte
         char file_path[64];
-        snprintf(file_path, sizeof(file_path), "/sdcard/%s/%s", selectedFolder, filename);
+        snprintf(file_path, sizeof(file_path), "%s/%s/%s", SD_CARD_MOUNT_POINT, selectedFolder, filename);
 
         // Öffne die Datei auf der SD-Karte
         FILE *file = fopen(file_path, "rb");
@@ -493,7 +493,7 @@ esp_err_t createFolderHandler(httpd_req_t *req) {
             // Hier könntest du zusätzliche Überprüfungen durchführen oder die Ordnererstellung implementieren
             // Zum Beispiel: Verwende die Funktion mkdir, um einen Ordner zu erstellen
             char folderPath[256];
-            snprintf(folderPath, sizeof(folderPath), "/sdcard/%s", folderName);
+            snprintf(folderPath, sizeof(folderPath), "%s/%s", SD_CARD_MOUNT_POINT, folderName);
             int mkdirResult = mkdir(folderPath, 0777);
 
             if (mkdirResult == 0) {
@@ -516,7 +516,7 @@ esp_err_t createFolderHandler(httpd_req_t *req) {
 
 esp_err_t getFolderNamesHandler(httpd_req_t *req) {
     // Öffne das Verzeichnis auf der SD-Karte
-    DIR *dir = opendir("/sdcard");  // Passe den Pfad entsprechend an
+    DIR *dir = opendir(SD_CARD_MOUNT_POINT);  // Passe den Pfad entsprechend an
     if (!dir) {
         ESP_LOGE(TAG, "Failed to open directory");
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Server Error");
@@ -574,14 +574,6 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
     }
 }
 
-// Ereignisgruppe definieren
-ESP_EVENT_DEFINE_BASE(MY_EVENTS);
-
-// Ereignisse definieren
-enum {
-    EVENT_PHOTO_CAPTURED,
-};
-
 TaskHandle_t taskHandle;
 
 void codeForTask2_core(void *pvParameters)
@@ -590,25 +582,17 @@ void codeForTask2_core(void *pvParameters)
 
     take_photo();
 
-    int repetitions = (24 * serieRange) / serieFreuqenz;
+    int repetitions = (24 * serieRange) / serieFreuqenz; //in Tagen und Stunden
+    //int repetitions = serieRange / serieFreuqenz; //in Minuten und Minuten
 
-    for (int i = 0; i<5; i++)
+    for (int i = 0; i<repetitions; i++)
     {
-        //vTaskDelay((3600000*serieFreuqenz) / portTICK_PERIOD_MS); //in Stunden
-        vTaskDelay((60000*serieFreuqenz) / portTICK_PERIOD_MS); //in Minuten
+        vTaskDelay((3600000*serieFreuqenz) / portTICK_PERIOD_MS); //in Stunden
+        //vTaskDelay((60000*serieFreuqenz) / portTICK_PERIOD_MS); //in Minuten
         take_photo();
     }
     vTaskDelete(taskHandle);
-}
-
-// Ereignisbehandlungsfunktion
-static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
-    if (event_id == EVENT_PHOTO_CAPTURED) {
-        // Foto wurde erfasst, führe die entsprechende Aktion aus
-        // Aufgaben auf dem Hauptkern können hier ausgeführt werden
-        printf("Foto wurde erfasst!\n");
-        printf("Hoffentlich 0: %d", xPortGetCoreID());
-    }
+    isSerieRunning = false;
 }
 
 esp_err_t startPhotoSerieHandler(httpd_req_t *req)
@@ -642,8 +626,8 @@ esp_err_t stopPhotoSerieHandler(httpd_req_t *req)
     ESP_LOGI(TAG, "Beendet Serie");
     // Lösche die Aufgabe
     vTaskDelete(taskHandle);
-    // Erfolgreiche Antwort senden
     isSerieRunning = false;
+    // Erfolgreiche Antwort senden
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -802,10 +786,5 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
 #endif // CONFIG_EXAMPLE_CONNECT_WIFI
     
-    server = start_webserver();
-
-    // Registriere die Ereignisbehandlungsfunktion für das Ereignis
-    //ESP_ERROR_CHECK(esp_event_loop_create_default());
-    //ESP_ERROR_CHECK(esp_event_handler_register_with(NULL, MY_EVENTS, EVENT_PHOTO_CAPTURED, event_handler, NULL));
-    
+    server = start_webserver();    
 }
