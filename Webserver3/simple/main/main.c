@@ -43,6 +43,9 @@
 
 static const char *TAG = "example";
 char selectedFolder[32] = "DEFAULT";
+char serieFolder[32] = "";
+int serieRange = 0; // Seriendauer in Tagen
+int serieFreuqenz = 0; // Zeit zwischen Bildern in Stunden
 bool isSerieRunning = false;
 
 /*----------------------------------
@@ -135,7 +138,7 @@ static esp_err_t initi_sd_card(void)
 }
 
 
-int sd_card_count_files() {
+int sd_card_count_files(char *folder) {
     // Dateipfad auf der SD-Karte
     char folder_path[512];
     snprintf(folder_path, sizeof(folder_path), "/sdcard/%s", selectedFolder);
@@ -163,17 +166,19 @@ int sd_card_count_files() {
 }
 
 
-static void take_photo()
+static void take_photo(char *folder)
 {
-    int nextImage = sd_card_count_files() + 1;
+    int nextImage = sd_card_count_files(folder) + 1;
     ESP_LOGI(TAG, "Starting Taking Picture!\n");
 
     camera_fb_t *pic = esp_camera_fb_get();
-
-    char photo_name[64];
-    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", selectedFolder, nextImage);
+    ESP_LOGI(TAG, "Hierhallo 1.1");
+    char photo_name[128];
+    sprintf(photo_name, "/sdcard/%s/PIC_%d.JPG", folder, nextImage);
+    ESP_LOGI(TAG, "Hierhallo 1.2");
     // Time Photo taken: pic->timestamp.tv_sec
     FILE *file = fopen(photo_name, "w");
+    ESP_LOGI(TAG, "Hierhallo 1.3");
     if (file == NULL)
     {
         printf("err: fopen failed\n");
@@ -185,7 +190,7 @@ static void take_photo()
     }
     
     esp_camera_fb_return(pic);
-    vTaskDelete(NULL);
+
     printf("Finished Taking Picture!\n");
 }
 
@@ -194,7 +199,7 @@ esp_err_t root_handler(httpd_req_t *req)
 {
     // Holen des Dateinamens aus dem Query-String
     char currentImage[8];
-    int imageCount = sd_card_count_files();
+    int imageCount = sd_card_count_files(selectedFolder);
 
     if (httpd_req_get_url_query_str(req, currentImage, sizeof(currentImage)) == ESP_OK)
     {
@@ -210,9 +215,13 @@ esp_err_t root_handler(httpd_req_t *req)
         snprintf(html_header, sizeof(html_header),
                  "<html><head><script>"
                  "var currentImage = %s;"
-                 "function loadNextImage() {"
+                 "function loadNextImage(i) {"
                  "  console.log('Button pressed');"
-                 "  currentImage++;"
+                 "  if(currentImage <= 1 && i <= 0) {"
+                 "      currentImage = 1;"
+                 "  } else {"
+                 "      currentImage = currentImage + i;"
+                 "  }"
                  "  location.href = '/root?' + currentImage;"
                  "}"
                  "function createFolder() {"
@@ -244,7 +253,13 @@ esp_err_t root_handler(httpd_req_t *req)
         // Button zum Erstellen des Ordners
         const char *html_newFolder_button = "<button onclick='createFolder()'>Ordner erstellen</button>";
 
-        // HTML-Dropdown um Folder auszuwählen
+        // Textfeld für Seriendauer
+        const char *html_serieRange_text = "Dauer: <input type='number' min='1' id='serieRange' placeholder='Serien Dauer'> in Tagen. ";
+
+        // Textfeld für Serienfrequenz
+        const char *html_serieFrequenz_text = " Frequenz: <input type='number' min='1' id='serieFrequenz' placeholder='Frequenz'> in Stunden. ";
+
+        // Button um serie zu stoppen
         const char *html_stop_button = "<script>"
                                        "function stopSerie() {"
                                        "    fetch('/stop_serie')"
@@ -263,10 +278,20 @@ esp_err_t root_handler(httpd_req_t *req)
                                        "</script>"
                                        "<button onclick='stopSerie()'>Serie beenden</button>";
 
-        // HTML-Dropdown um Folder auszuwählen
+        // Button um serie zu starten
         const char *html_start_button     = "<script>"
                                            "function startSerie() {"
-                                           "    fetch('/start_serie')"
+                                           "    var serieRange = document.getElementById('serieRange').value;"
+                                           "    var serieFrequenz = document.getElementById('serieFrequenz').value;"
+                                           "    if (serieRange.trim() === '') {"
+                                           "        alert('Bitte geben Sie eine Dauer ein.');"
+                                           "        return;"
+                                           "    }"
+                                           "    if (serieFrequenz.trim() === '') {"
+                                           "        alert('Bitte geben Sie eine Frequenz ein.');"
+                                           "        return;"
+                                           "    }"
+                                           "    fetch('/start_serie?range=' + serieRange + 'frequenz=' + serieFrequenz)"
                                            "        .then(response => {"
                                            "            if (response.ok) {"
                                            "                alert('Serie gestartet');"
@@ -283,7 +308,7 @@ esp_err_t root_handler(httpd_req_t *req)
                                            "<button onclick='startSerie()'>Serie starten</button>";
 
         char html_current_folder_info[64];
-        snprintf(html_current_folder_info, sizeof(html_current_folder_info), "<p>Aktuell: %s</p>", selectedFolder);
+        snprintf(html_current_folder_info, sizeof(html_current_folder_info), "Aktuell: %s ", selectedFolder);
 
         const char *html_dropdown_folder = "<script>"
                                            "function loadFolderNames() {"
@@ -307,6 +332,13 @@ esp_err_t root_handler(httpd_req_t *req)
                                            "function changeSelectedFolder() {"
                                            "   const selectedFolder = document.getElementById('folderSelect').value;"
                                            "   fetch(`/change_selected_folder?${selectedFolder}`)"
+                                           "    .then(response => {"
+                                           "            if (response.ok) {"
+                                           "                location.reload();"
+                                           "            } else {"
+                                           "                alert('Odner konnte nicht gewechselt werden.');"
+                                           "            }"
+                                           "        })"
                                            "   .catch(error => {"
                                            "       console.error('Fehler beim Laden der Bilder:', error);"
                                            "   });"
@@ -314,10 +346,20 @@ esp_err_t root_handler(httpd_req_t *req)
                                            "</script>"
                                            "<label for='folderSelect'>Ordner: </label>"
                                            "<select id='folderSelect' onchange='changeSelectedFolder()'>"
-                                           "</select>";
+                                           "</select>"
+                                           "<script>"
+                                           "const folderSelect = document.getElementById('folderSelect');"
+                                           "folderSelect.value = 'DEFAULT';"
+                                           "</script>";
 
         // HTML-Button zum Laden des nächsten Bildes
-        const char *html_next_button = "<button onclick='loadNextImage()'>Weiter</button>";
+        const char *html_next_button = "<button onclick='loadNextImage(1)'>Weiter</button>";
+
+        // HTML-Button zum Laden des vorhergehenden Bildes
+        const char *html_back_button = "<button onclick='loadNextImage(-1)'>Zurück</button>";
+
+        //HTML-Zeilensprung
+        const char *html_jump = "<br>";
 
         // HTML-Footer
         const char *html_footer = "</body></html>";
@@ -335,8 +377,14 @@ esp_err_t root_handler(httpd_req_t *req)
         // Dropdownmenü
         httpd_resp_send_chunk(req, html_dropdown_folder, strlen(html_dropdown_folder));
 
-        // Aktueller Ordner
-        httpd_resp_send_chunk(req, html_current_folder_info, strlen(html_current_folder_info));
+        // Zeilensprung
+        httpd_resp_send_chunk(req, html_jump, strlen(html_jump));
+
+        // Textfeld Serien Dauer
+        httpd_resp_send_chunk(req, html_serieRange_text, strlen(html_serieRange_text));
+
+        // Textfeld Serien Frequenz
+        httpd_resp_send_chunk(req, html_serieFrequenz_text, strlen(html_serieFrequenz_text));
 
         if(isSerieRunning){
             // Der Button stoppt Bildserie
@@ -345,6 +393,15 @@ esp_err_t root_handler(httpd_req_t *req)
             // Der Button startet Bildserie
             httpd_resp_send_chunk(req, html_start_button, strlen(html_start_button));
         }
+
+        // Zeilensprung
+        httpd_resp_send_chunk(req, html_jump, strlen(html_jump));
+
+        // Aktueller Ordner
+        httpd_resp_send_chunk(req, html_current_folder_info, strlen(html_current_folder_info));
+
+        // Der Button vorhergehenden Bild
+        httpd_resp_send_chunk(req, html_back_button, strlen(html_back_button));
 
         // Der Button nächstes Bild
         httpd_resp_send_chunk(req, html_next_button, strlen(html_next_button));
@@ -502,6 +559,7 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
         if (strlen(foldername) < sizeof(selectedFolder)) {
             strcpy(selectedFolder, foldername);
             ESP_LOGI(TAG, "selectedFolder: %s", foldername);
+            httpd_resp_sendstr(req, "OK");
             return ESP_OK;
         } else {
             ESP_LOGE(TAG, "Fehler beim Ändern des Ordners");
@@ -520,20 +578,46 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
 
 TaskHandle_t taskHandle;
 
-void codeForTask2_core( void * parameter )
+void codeForTask2_core()
 {
-   for (;;)
-   {
-      printf("codeForTask2 is running on Core: ");
-      printf("%d\n", xPortGetCoreID());
-      vTaskDelay(5000 / portTICK_PERIOD_MS);
-   }
-
+    strcpy(serieFolder, selectedFolder);
+    ESP_LOGI(TAG, "hierhallo 1");
+    take_photo(serieFolder);
+    int repetitions = (24 * serieRange) / serieFreuqenz;
+    ESP_LOGI(TAG, "hierhallo 2");
+    for (int i = 0; i<repetitions; i++)
+    {
+        ESP_LOGI(TAG, "hierhallo 3");
+        //vTaskDelay((3600000*serieFreuqenz) / portTICK_PERIOD_MS); //in Stunden
+        vTaskDelay((60000*serieFreuqenz) / portTICK_PERIOD_MS); //in Minuten
+        take_photo(serieFolder);
+        ESP_LOGI(TAG, "hierhallo 4");
+    }
+    vTaskDelete(taskHandle);
 }
 
 esp_err_t startPhotoSerieHandler(httpd_req_t *req)
 {
-    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
+    char urlParameter[64];
+    if (httpd_req_get_url_query_str(req, urlParameter, sizeof(urlParameter)) == ESP_OK) {
+        ESP_LOGI(TAG, "Angekommen: %s", urlParameter);
+
+        // Suche nach dem "range="-Präfix und extrahiere die Zahl
+        const char *rangePtr = strstr(urlParameter, "range=");
+        if (rangePtr != NULL) {
+            serieRange = atoi(rangePtr + strlen("range="));
+        }
+
+        // Suche nach dem "frequenz="-Präfix und extrahiere die Zahl
+        const char *frequenzPtr = strstr(urlParameter, "frequenz=");
+        if (frequenzPtr != NULL) {
+            serieFreuqenz = atoi(frequenzPtr + strlen("frequenz="));
+        }
+    }
+
+    //take_photo(selectedFolder);
+    codeForTask2_core();
+    //xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
     // Erfolgreiche Antwort senden
     isSerieRunning = true;
     httpd_resp_sendstr(req, "OK");
@@ -668,19 +752,15 @@ static void connect_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-// Zählvariable für die Anzahl der Fotos
-int photoCount = 0;
-
-// Thread für das Aufnehmen von Fotos
-void photoTask() {
-    while (photoCount < 10) {
-        take_photo();
-        photoCount++;
-        vTaskDelay(30000 / portTICK_PERIOD_MS); // Warte 1 Sekunde zwischen den Fotos
-    }
-    vTaskDelete(NULL); // Beende den Task nach 10 Fotos
+void codeForTask3_core()
+{
+    #ifdef CONFIG_EXAMPLE_CONNECT_WIFI
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
+#endif // CONFIG_EXAMPLE_CONNECT_WIFI
+    static httpd_handle_t server = NULL;
+    server = start_webserver();
 }
-
 
 void app_main(void)
 {
@@ -699,7 +779,6 @@ void app_main(void)
         return;
     }
 
-    static httpd_handle_t server = NULL;
 
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_netif_init());
@@ -714,11 +793,8 @@ void app_main(void)
     /* Register event handlers to stop the server when Wi-Fi or Ethernet is disconnected,
      * and re-start it upon connection.
      */
-#ifdef CONFIG_EXAMPLE_CONNECT_WIFI
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &connect_handler, &server));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &disconnect_handler, &server));
-#endif // CONFIG_EXAMPLE_CONNECT_WIFI
+
 
     /* Start the server for the first time */
-    server = start_webserver();
+    xTaskCreatePinnedToCore(codeForTask3_core, "core1", 1024*2, NULL, 2, &taskHandle, 1);
 }
