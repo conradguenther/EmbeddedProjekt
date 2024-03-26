@@ -31,168 +31,36 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-#include "esp_camera.h"
-
 #include "esp_timer.h"
 
 #include "cJSON.h"
+
+#include "sd_card.h"
+#include "cam.h"
+
 /* A simple example that demonstrates how to create GET and POST
  * handlers for the web server.
  */
-#define SD_CARD_MOUNT_POINT "/sdcard"
 
-static const char *TAG = "example";
+static const char *TAG = "main";
 char selectedFolder[32] = "DEFAULT";
 char serieFolder[32] = "";
 int serieRange = 0; // Seriendauer in Tagen
 int serieFreuqenz = 0; // Zeit zwischen Bildern in Stunden
 bool isSerieRunning = false;
+time_t start_time;
 
-/*----------------------------------
----------- Kamera-------------------
------------------------------------*/
-// Funktion zum Initialisieren der Kamera
-#define BUTTON_PIN 3
+int get_rest_time(){
+    time_t current_time;
+    time(&current_time);
 
-#define CAM_PIN_PWDN    32 
-#define CAM_PIN_RESET   -1 //software reset will be performed
-#define CAM_PIN_XCLK    0
-#define CAM_PIN_SIOD    26
-#define CAM_PIN_SIOC    27
+    int rest_time = 1;
 
-#define CAM_PIN_D7      35
-#define CAM_PIN_D6      34
-#define CAM_PIN_D5      39
-#define CAM_PIN_D4      36
-#define CAM_PIN_D3      21
-#define CAM_PIN_D2      19
-#define CAM_PIN_D1      18
-#define CAM_PIN_D0       5
-#define CAM_PIN_VSYNC   25
-#define CAM_PIN_HREF    23
-#define CAM_PIN_PCLK    22
+    rest_time = (serieRange * 24 * 60 * 60) - (current_time - start_time);
 
-#define CONFIG_XCLK_FREQ 20000000 
-#define CONFIG_OV2640_SUPPORT 1
-#define CONFIG_OV7725_SUPPORT 1
-#define CONFIG_OV3660_SUPPORT 1
-#define CONFIG_OV5640_SUPPORT 1
-
-static esp_err_t init_camera(void)
-{
-    camera_config_t camera_config = {
-        .pin_pwdn  = CAM_PIN_PWDN,
-        .pin_reset = CAM_PIN_RESET,
-        .pin_xclk = CAM_PIN_XCLK,
-        .pin_sccb_sda = CAM_PIN_SIOD,
-        .pin_sccb_scl = CAM_PIN_SIOC,
-
-        .pin_d7 = CAM_PIN_D7,
-        .pin_d6 = CAM_PIN_D6,
-        .pin_d5 = CAM_PIN_D5,
-        .pin_d4 = CAM_PIN_D4,
-        .pin_d3 = CAM_PIN_D3,
-        .pin_d2 = CAM_PIN_D2,
-        .pin_d1 = CAM_PIN_D1,
-        .pin_d0 = CAM_PIN_D0,
-        .pin_vsync = CAM_PIN_VSYNC,
-        .pin_href = CAM_PIN_HREF,
-        .pin_pclk = CAM_PIN_PCLK,
-
-        .xclk_freq_hz = CONFIG_XCLK_FREQ,
-        .ledc_timer = LEDC_TIMER_0,
-        .ledc_channel = LEDC_CHANNEL_0,
-
-        .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_UXGA,
-
-        .jpeg_quality = 12,
-        .fb_count = 1,
-        .grab_mode = CAMERA_GRAB_WHEN_EMPTY};//CAMERA_GRAB_LATEST. Sets when buffers should be filled
-    esp_err_t err = esp_camera_init(&camera_config);
-    if (err != ESP_OK)
-    {
-        return err;
-    }
-    return ESP_OK;
+    return rest_time;
 }
 
-/*----------------------------------
----------- SD-Karte-------------------
------------------------------------*/
-static esp_err_t initi_sd_card(void)
-{  
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
-        .max_files = 3,
-    };
-    sdmmc_card_t *card;
-    esp_err_t err = esp_vfs_fat_sdmmc_mount(SD_CARD_MOUNT_POINT, &host, &slot_config, &mount_config, &card);
-    if (err != ESP_OK)
-    {
-        return err;
-    }
-    return ESP_OK;
-}
-
-
-int sd_card_count_files(char *folder) {
-    // Dateipfad auf der SD-Karte
-    char folder_path[64];
-    snprintf(folder_path, sizeof(folder_path), "%s/%s", SD_CARD_MOUNT_POINT, folder);
-    // Öffne das Verzeichnis auf der SD-Karte
-    DIR* dir = opendir(folder_path);
-    if (!dir) {
-        printf("Fehler beim Öffnen des Verzeichnisses auf der SD-Karte.\n");
-        return -1;
-    }
-
-    // Zähle die Dateien mit dem angegebenen Präfix und Suffix
-    int fileCount = 0;
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_REG && strncmp(entry->d_name, "PIC", strlen("PIC")) == 0 &&
-            strstr(entry->d_name, ".JPG") != NULL) {
-            fileCount++;
-        }
-    }
-    ESP_LOGI(TAG, "Files gefunden: %d", fileCount);
-    // Schließe das Verzeichnis
-    closedir(dir);
-
-    return fileCount;
-}
-
-
-static void take_photo()
-{
-    int nextImage = sd_card_count_files(serieFolder) + 1;
-    ESP_LOGI(TAG, "Starting Taking Picture!\n");
-
-    camera_fb_t *pic = esp_camera_fb_get();
-
-    char photo_name[64];
-    sprintf(photo_name, "%s/%s/PIC_%d.JPG",SD_CARD_MOUNT_POINT , serieFolder, nextImage);
-
-    // Time Photo taken: pic->timestamp.tv_sec
-    FILE *file = fopen(photo_name, "w");
-
-    if (file == NULL)
-    {
-        printf("err: fopen failed\n");
-    }
-    else
-    {
-        fwrite(pic->buf, 1, pic->len, file);
-        fclose(file);
-    }
-    
-    esp_camera_fb_return(pic);
-
-    printf("Finished Taking Picture!\n");
-}
 
 esp_err_t root_handler(httpd_req_t *req)
 {
@@ -257,6 +125,23 @@ esp_err_t root_handler(httpd_req_t *req)
 
         // Textfeld für Serienfrequenz
         const char *html_serieFrequenz_text = " Frequenz: <input type='number' min='1' id='serieFrequenz' placeholder='Frequenz'> in Stunden. ";
+
+        int seconds_lasting = get_rest_time();
+
+        int days_lasting = seconds_lasting / (24 * 60 * 60);
+        seconds_lasting = seconds_lasting % (24 * 60 * 60);
+    
+        int hours_lasting = seconds_lasting / (60 * 60);
+        seconds_lasting = seconds_lasting % (60 * 60);
+
+        int minutes_lasting = seconds_lasting / 60;
+        int seconds = seconds_lasting % 60;
+
+        // Verbleibende Zeit
+        char html_lastingTime[128];
+        snprintf(html_lastingTime, sizeof(html_lastingTime), 
+                "Verbleibende Zeit: %d Tage, %d Stunden, %d Minuten, %d Sekunden\n", 
+                days_lasting, hours_lasting, minutes_lasting, seconds);
 
         // Button um serie zu stoppen
         const char *html_stop_button = "<script>"
@@ -379,16 +264,17 @@ esp_err_t root_handler(httpd_req_t *req)
         // Zeilensprung
         httpd_resp_send_chunk(req, html_jump, strlen(html_jump));
 
-        // Textfeld Serien Dauer
-        httpd_resp_send_chunk(req, html_serieRange_text, strlen(html_serieRange_text));
-
-        // Textfeld Serien Frequenz
-        httpd_resp_send_chunk(req, html_serieFrequenz_text, strlen(html_serieFrequenz_text));
-
         if(isSerieRunning){
+            // Verbleibende Zeit 
+            httpd_resp_send_chunk(req, html_lastingTime, strlen(html_lastingTime));
             // Der Button stoppt Bildserie
             httpd_resp_send_chunk(req, html_stop_button, strlen(html_stop_button));
         } else {
+            // Textfeld Serien Dauer
+            httpd_resp_send_chunk(req, html_serieRange_text, strlen(html_serieRange_text));
+
+            // Textfeld Serien Frequenz
+            httpd_resp_send_chunk(req, html_serieFrequenz_text, strlen(html_serieFrequenz_text));
             // Der Button startet Bildserie
             httpd_resp_send_chunk(req, html_start_button, strlen(html_start_button));
         }
@@ -576,11 +462,11 @@ esp_err_t changeSelectedFolderHandler(httpd_req_t *req)
 
 TaskHandle_t taskHandle;
 
-void codeForTask2_core(void *pvParameters)
+void photo_task(void *pvParameters)
 {
     strcpy(serieFolder, selectedFolder);
 
-    take_photo();
+    take_photo(serieFolder);
 
     int repetitions = (24 * serieRange) / serieFreuqenz; //in Tagen und Stunden
     //int repetitions = serieRange / serieFreuqenz; //in Minuten und Minuten
@@ -589,7 +475,7 @@ void codeForTask2_core(void *pvParameters)
     {
         vTaskDelay((3600000*serieFreuqenz) / portTICK_PERIOD_MS); //in Stunden
         //vTaskDelay((60000*serieFreuqenz) / portTICK_PERIOD_MS); //in Minuten
-        take_photo();
+        take_photo(serieFolder);
     }
     vTaskDelete(taskHandle);
     isSerieRunning = false;
@@ -614,7 +500,10 @@ esp_err_t startPhotoSerieHandler(httpd_req_t *req)
         }
     }
 
-    xTaskCreatePinnedToCore(codeForTask2_core, "core1", 1024*3, NULL, 2, &taskHandle, 1);
+    time(&start_time);
+
+    xTaskCreatePinnedToCore(photo_task, "core1", 1024*3, NULL, 2, &taskHandle, 1);
+
     // Erfolgreiche Antwort senden
     isSerieRunning = true;
     httpd_resp_sendstr(req, "OK");
