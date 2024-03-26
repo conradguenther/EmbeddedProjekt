@@ -1,3 +1,0 @@
-dependencies:
-  espressif/esp32-camera: "^2.0.8"
-  espressif/led_strip: "^2.0.0"
